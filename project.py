@@ -1,7 +1,7 @@
-"""NEUROVOCAL:EEG-TO-SPEECH BCI
+"""SSVEP-Based Brain-Computer Interface (BCI) for Assistive Communication.
 
+File: project.py
 Author: Ibrahim Zakaria Hassan Mohamed
-Course: CS50P (Harvard University)
 License: MIT
 Domain: Biomedical Engineering / Assistive Neurotechnology
 
@@ -23,8 +23,8 @@ import sys
 from typing import Tuple
 import numpy as np
 from scipy import signal
-import pyttsx3
-
+from piper import PiperVoice, SynthesisConfig
+import sounddevice as sd
 
 # ---------------------------------------------------------------------------
 # Global Pipeline Parameters & Hardware Configuration
@@ -51,9 +51,9 @@ def main() -> None:
     frequencies, power_spectrum = compute_power_spectrum(filtered_data)
 
     target_frequency = extract_target_frequency(frequencies, power_spectrum)
-    sentence = to_speech(target_frequency)
+    command_text = to_speech(target_frequency)
 
-    print(f"\n[BCI Output]: {sentence}")
+    print(f"\n[BCI Output]: {command_text}")
 
 def validate_file(file_path: str) -> None:
     """Validate input dataset existence and verify numerical data integrity.
@@ -237,29 +237,51 @@ def extract_target_frequency(frequencies: np.ndarray, power_spectrum: np.ndarray
 
 
 def to_speech(detected_frequency: float) -> str:
-    """Synthesize speech output matching the identified SSVEP command frequency.
+    """Synthesize and stream audio output for the command mapped to a detected frequency.
 
     Parameters
     ----------
     detected_frequency : float
-        Classified SSVEP stimulus frequency in Hz.
+        The stimulus frequency (Hz) identified from SSVEP classification.
 
     Returns
     -------
     str
-        The synthesized command sentence.
+        The verbal command corresponding to the detected frequency.
 
     Notes
     -----
-    Uses `pyttsx3` for fully offline, cross-platform Text-to-Speech execution.
+    Retrieves the textual command from `FREQUENCY_TO_COMMAND`, synthesizes 
+    PCM audio using the Piper TTS model, converts raw audio chunks into 
+    16-bit integer NumPy arrays, and plays them via `sounddevice`.
     """
-    sentence = FREQUENCY_TO_COMMAND[detected_frequency]
+    command_text = FREQUENCY_TO_COMMAND[detected_frequency]
+    
+    # Load Piper TTS model and synthesis configuration
+    voice = PiperVoice.load(r"F:\Python\Project\en_US-lessac-medium.onnx")
 
-    engine = pyttsx3.init()
-    engine.say(sentence)
-    engine.runAndWait()
+    syn_config = SynthesisConfig(
+        volume=0.5,
+        length_scale=1.5,
+        noise_scale=1.0,
+        noise_w_scale=1.0,
+        normalize_audio=True
+    )
 
-    return sentence
+    for chunk in voice.synthesize(command_text, syn_config=syn_config):
+        audio = np.frombuffer(
+            chunk.audio_int16_bytes,
+            dtype=np.int16,
+            count=-1, 
+            offset=0,
+            like=None
+        )
+
+        # Stream and play the synthesized audio chunk
+        sd.play(audio, chunk.sample_rate)
+        sd.wait()
+
+    return command_text
 
 
 if __name__ == "__main__":
