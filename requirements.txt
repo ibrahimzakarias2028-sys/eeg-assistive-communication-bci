@@ -1,4 +1,5 @@
 numpy
 scipy
-pyttsx3
+piper
+sounddevice
 pytest
