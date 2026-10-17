@@ -97,3 +97,8 @@ This project was born from a deep belief that engineering should serve humanity.
   <em>Built with 💻, 🧠, and curiosity.</em><br>
   <strong>Computer Engineering | Neurotechnology | Assistive Technology</strong>[cite: 1]
 </p>
+
+---
+
+**Data Citation:**
+Data sourced from Acampora, G., Trinchese, P., & Vitiello, A. (2021). A dataset of EEG signals from a single-channel SSVEP-based BCI. *Data in Brief*, 35, 106826. (CC license, open access)
