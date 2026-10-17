@@ -76,14 +76,14 @@ Maps the classified frequency to its corresponding command and synthesizes natur
 
 ## ⚖️ Design Choices & Engineering Trade-offs
 
-During development, several technical alternatives were debated to ensure clinical reliability:
+During development, several technical alternatives were debated to ensure reliability:
 
 | Alternative Considered | Why It Was Rejected & The Final Choice |
 |:---|:---|
 | **Plain FFT (`scipy.fft`)** | Raw FFT produces high-variance spectral estimates. **Welch's method** was chosen because segment averaging significantly reduces noise variance, which is critical for detecting weak SSVEP peaks in spontaneous background EEG. |
 | **Direct-form (ba) Filter** | Direct-form coefficients suffer from numerical instability in high-order filters. **SOS (Second-Order Sections)** cascades were chosen for superior numerical precision. |
 | **`filtfilt` vs `lfilter`** | Standard filtering introduces phase delay. `sosfiltfilt` (forward-backward zero-phase filtering) was explicitly chosen to prevent temporal distortion. |
-| **Cloud-based TTS APIs** | Cloud TTS introduces latency and requires internet access. `pyttsx3` was chosen for **zero-latency, fully offline execution**, ensuring privacy and reliability in clinical settings. |
+| **Cloud-based TTS APIs** | Cloud TTS introduces latency and requires internet access. `pyttsx3` was initially used, then replaced with **Piper TTS** for higher voice naturalness while maintaining zero-latency, fully offline execution. |
 
 ---
 
