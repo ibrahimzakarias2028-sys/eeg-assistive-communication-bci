@@ -23,6 +23,7 @@ import sys
 from typing import Tuple
 import numpy as np
 from scipy import signal
+from sklearn.cross_decomposition import CCA
 from piper import PiperVoice, SynthesisConfig
 import sounddevice as sd
 
@@ -46,11 +47,11 @@ def main() -> None:
     file_path = input("Enter The File Name: ")
     validate_file(file_path)
 
-    raw_data = read_data(file_path)
+    raw_data= read_data(file_path)
     filtered_data = filter_signal(raw_data)
-    frequencies, power_spectrum = compute_power_spectrum(filtered_data)
-
-    target_frequency = extract_target_frequency(frequencies, power_spectrum)
+    stimulus_waves = hertz_to_waves(STIMULUS_FREQUENCIES, len(filtered_data))
+    X_c, Y_c = cca(stimulus_waves, filtered_data)
+    target_frequency = detect_frequency(X_c, Y_c)
     command_text = to_speech(target_frequency)
 
     print(f"\n[BCI Output]: {command_text}")
@@ -104,6 +105,7 @@ def read_data(file_path: str) -> np.ndarray:
     data = np.loadtxt(file_path)
     if data.size == 0:
         raise ValueError("Loaded EEG dataset is empty.")
+    
     return data
 
 
@@ -163,108 +165,146 @@ def filter_signal(raw_data: np.ndarray) -> np.ndarray:
     return filtered_data
 
 
-def compute_power_spectrum(filtered_data: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Estimate Power Spectral Density (PSD) using Welch's periodogram method.
+def hertz_to_waves(stimulus_frequencies: np.ndarray, data_length: int) -> list:
+    """Generate sinusoidal reference signals for canonical correlation analysis.
 
     Parameters
     ----------
-    filtered_data : np.ndarray
-        Cleaned 1-D time-series EEG signal.
+    stimulus_frequencies : np.ndarray
+        1-D array of target SSVEP stimulus frequencies (Hz).
+    data_length : int
+        Total number of samples in the filtered EEG recording, used to match temporal duration.
 
     Returns
     -------
-    frequencies : np.ndarray
-        Array of discrete frequency bins up to the Nyquist limit.
-    power_spectrum : np.ndarray
-        Power spectral density values (V^2/Hz) corresponding to frequency bins.
+    list of np.ndarray
+        A list containing 1-D sinusoidal reference wave arrays for each stimulus frequency.
 
     Notes
     -----
-    Welch's method divides the signal into overlapping segments, computes modified
-    periodograms, and averages them. This reduces spectral variance significantly
-    compared to standard FFT, making it ideal for extracting weak SSVEP peaks
-    embedded in spontaneous cortical activity.
+    - **Time Synchronization**: Constructs a high-resolution time array scaled dynamically
+      to the exact duration of the EEG signal ($\text{data\_length} / \text{SAMPLING\_RATE}$).
+    - **Reference Modeling**: Generates pure sine waves ($\sin(2\pi f t)$) to serve as temporal
+      template references for frequency-specific phase alignment in CCA.
     """
-    frequencies, power_spectrum = signal.welch(
-        x=filtered_data,
-        fs=SAMPLING_RATE,
-        window='hann',
-        nperseg=1024,
-        noverlap=512,
-        nfft=1024,
-        detrend='constant',
-        return_onesided=True,
-        scaling='spectrum',
-        axis=-1,
-        average='mean'
+    stimulus_waves = []
+    time_array = np.linspace(
+        0,
+        data_length / SAMPLING_RATE,
+        num=data_length,
+        endpoint=True,
+        retstep=False
     )
+    for freq in stimulus_frequencies:
+        wave = np.sin(2 * np.pi * freq * time_array)  
+        stimulus_waves.append(wave)
 
-    return frequencies, power_spectrum
+    return stimulus_waves
 
 
-def extract_target_frequency(frequencies: np.ndarray, power_spectrum: np.ndarray) -> float:
-    """Classify user intent by identifying the target frequency with peak spectral power.
+def cca(stimulus_waves: list, filtered_data: np.ndarray) -> Tuple[list, list]:
+    """Execute multi-template Canonical Correlation Analysis (CCA) for frequency recognition.
 
     Parameters
     ----------
-    frequencies : np.ndarray
-        Array of computed frequency bins from PSD analysis.
-    power_spectrum : np.ndarray
-        Corresponding power spectral density values.
+    stimulus_waves : list of np.ndarray
+        List of 1-D sinusoidal reference waves for each target frequency.
+    filtered_data : np.ndarray
+        Pre-processed 1-D EEG voltage signal.
+
+    Returns
+    -------
+    Tuple[list, list]
+        - `Xs_C`: List of transformed canonical variables corresponding to reference waves.
+        - `Ys_C`: List of transformed canonical variables corresponding to the EEG signal.
+
+    Notes
+    -----
+    - **Dimensionality Reshaping**: Converts 1-D vectors into 2D column matrices (`(-1, 1)`)
+      required by scikit-learn estimator interfaces.
+    - **Independent Projections**: Iterates through each stimulus reference independently,
+      fitting a 1-component CCA model to maximize linear correlation between the reference
+      template and the multichannel/single-channel EEG data structure.
+    """
+    reshaped_stimulus_waves = []
+    for stimulus_wave in stimulus_waves:
+        reshaped_stimulus_wave = np.reshape(stimulus_wave, (-1, 1))
+        reshaped_stimulus_waves.append(reshaped_stimulus_wave)
+    reshaped_filtered_data = np.reshape(filtered_data, (-1, 1))
+    
+    Xs_C, Ys_C = [], []
+    for wave in reshaped_stimulus_waves:
+        cca_model = CCA(n_components=1)
+        cca_model.fit(wave, reshaped_filtered_data)
+        X_c, Y_c = cca_model.transform(wave, reshaped_filtered_data)
+        Xs_C.append(X_c)
+        Ys_C.append(Y_c)
+        
+    return Xs_C, Ys_C
+
+
+def detect_frequency(X_c: list, Y_c: list) -> float:
+    """Classify the target SSVEP frequency by evaluating maximal canonical correlation coefficients.
+
+    Parameters
+    ----------
+    X_c : list of np.ndarray
+        List of transformed reference canonical variables.
+    Y_c : list of np.ndarray
+        List of transformed EEG canonical variables.
 
     Returns
     -------
     float
-        The stimulus frequency (Hz) exhibiting the highest spectral power.
+        The classified target frequency corresponding to the maximum correlation score.
 
     Notes
     -----
-    Uses exact bin index mapping via absolute difference minimization (`argmin`)
-    to evaluate power at predefined target frequencies (8.57, 10.00, 12.00, 15.00 Hz),
-    followed by `argmax` to classify the user's intent.
+    - **Vector Flattening**: Employs `.ravel()` to safely cast 2D transformed components back
+      into 1-D vectors for Pearson correlation matrix extraction via `np.corrcoef`.
+    - **Decision Rule**: Uses `np.argmax` to find the reference frequency index yielding the
+      strongest linear association with the recorded EEG segment.
     """
-    target_powers = []
-
-    for target_freq in STIMULUS_FREQUENCIES:
-        freq_differences = np.absolute(frequencies - target_freq)
-        closest_index = freq_differences.argmin()
-        target_powers.append(power_spectrum[closest_index])
-
-    target_powers_arr = np.array(target_powers)
-    target_power_index = np.argmax(target_powers_arr)
-
-    return float(STIMULUS_FREQUENCIES[target_power_index])
+    correlation_coefficients = []
+    for x, y in zip(X_c, Y_c):
+        correlation = np.corrcoef(x.ravel(), y.ravel())[0, 1]
+        correlation_coefficients.append(correlation)
+        
+    index_of_max_correlation = np.argmax(correlation_coefficients, axis=None, out=None, keepdims=False)
+    detected_frequency = STIMULUS_FREQUENCIES[index_of_max_correlation]
+    
+    return detected_frequency
 
 
 def to_speech(detected_frequency: float) -> str:
-    """Synthesize and stream audio output for the command mapped to a detected frequency.
+    """Synthesize real-time offline text-to-speech output matching the decoded BCI command.
 
     Parameters
     ----------
     detected_frequency : float
-        The stimulus frequency (Hz) identified from SSVEP classification.
+        The classified frequency mapped to an assistive communication command.
 
     Returns
     -------
     str
-        The verbal command corresponding to the detected frequency.
+        The textual command associated with the target frequency.
 
     Notes
     -----
-    Retrieves the textual command from `FREQUENCY_TO_COMMAND`, synthesizes 
-    PCM audio using the Piper TTS model, converts raw audio chunks into 
-    16-bit integer NumPy arrays, and plays them via `sounddevice`.
+    - **Engine Integration**: Utilizes the offline ONNX-based `PiperVoice` neural synthesizer
+      for low-latency voice rendering.
+    - **Acoustic Profiling**: Configures custom synthesis parameters (volume scale, length scale,
+      and noise variance) for clear, paced auditory articulation via `sounddevice`.
     """
     command_text = FREQUENCY_TO_COMMAND[detected_frequency]
     
-    # Load Piper TTS model and synthesis configuration
     voice = PiperVoice.load(r"F:\Python\Project\en_US-lessac-medium.onnx")
 
     syn_config = SynthesisConfig(
-        volume=0.5,
-        length_scale=1.5,
-        noise_scale=1.0,
-        noise_w_scale=1.0,
+        volume=0.5,  # half as loud
+        length_scale=1.5,  # slower speech rate
+        noise_scale=1.0,  # more audio variation
+        noise_w_scale=1.0,  # more speaking variation
         normalize_audio=True
     )
 
@@ -277,12 +317,7 @@ def to_speech(detected_frequency: float) -> str:
             like=None
         )
 
-        # Stream and play the synthesized audio chunk
         sd.play(audio, chunk.sample_rate)
         sd.wait()
 
     return command_text
-
-
-if __name__ == "__main__":
-    main()
