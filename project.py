@@ -321,3 +321,7 @@ def to_speech(detected_frequency: float) -> str:
         sd.wait()
 
     return command_text
+
+
+if __name__ == "__main__":
+    main()
