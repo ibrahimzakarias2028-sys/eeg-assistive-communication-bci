@@ -34,6 +34,8 @@ SAMPLING_RATE: int = 256  # Hz — Satisfies Nyquist-Shannon sampling theorem fo
 
 STIMULUS_FREQUENCIES: np.ndarray = np.array([8.57, 10.00, 12.00, 15.00])
 
+N_HARMONICS: int = 2
+
 FREQUENCY_TO_COMMAND: dict[float, str] = {
     8.57: "I want water",
     10.00: "I want to eat",
@@ -178,26 +180,30 @@ def hertz_to_waves(stimulus_frequencies: np.ndarray, data_length: int) -> list:
     Returns
     -------
     list of np.ndarray
-        A list containing 1-D sinusoidal reference wave arrays for each stimulus frequency.
+        A list of 2-D reference arrays of shape (data_length, 4) containing fundamental
+        and second-harmonic sine and cosine waves for each stimulus frequency.
 
     Notes
     -----
-    - **Time Synchronization**: Constructs a high-resolution time array scaled dynamically
-      to the exact duration of the EEG signal ($\text{data\_length} / \text{SAMPLING\_RATE}$).
-    - **Reference Modeling**: Generates pure sine waves ($\sin(2\pi f t)$) to serve as temporal
-      template references for frequency-specific phase alignment in CCA.
+    - **Time Synchronization**: Constructs a time array directly from sample indices
+      divided by the sampling rate ($\text{np.arange}(0, \text{data\_length}) / \text{SAMPLING\_RATE}$).
+    - **Reference Modeling**: Generates fundamental and second-harmonic sine and cosine
+      waves stacked as columns to serve as temporal reference templates in CCA.
     """
     stimulus_waves = []
-    time_array = np.linspace(
-        0,
-        data_length / SAMPLING_RATE,
-        num=data_length,
-        endpoint=True,
-        retstep=False
-    )
+    
+    time_index = np.arange(0, data_length)  # Create a time index array
+    time_array = time_index / SAMPLING_RATE  # Convert index to time in seconds
+
+
     for freq in stimulus_frequencies:
-        wave = np.sin(2 * np.pi * freq * time_array)  
-        stimulus_waves.append(wave)
+       original_sine_wave = np.sin(2 * np.pi * freq * time_array)  
+       original_cos_wave = np.cos(2 * np.pi * freq * time_array)
+       second_harmonic_sine_wave = np.sin(2 * np.pi * 2 * freq * time_array)
+       second_harmonic_cos_wave = np.cos(2 * np.pi * 2 * freq * time_array)
+
+       stucked_array = np.column_stack((original_sine_wave, original_cos_wave, second_harmonic_sine_wave, second_harmonic_cos_wave))
+       stimulus_waves.append(stucked_array)
 
     return stimulus_waves
 
@@ -208,7 +214,7 @@ def cca(stimulus_waves: list, filtered_data: np.ndarray) -> Tuple[list, list]:
     Parameters
     ----------
     stimulus_waves : list of np.ndarray
-        List of 1-D sinusoidal reference waves for each target frequency.
+        List of 2-D reference arrays of shape (N, 4) for each target frequency.
     filtered_data : np.ndarray
         Pre-processed 1-D EEG voltage signal.
 
@@ -220,20 +226,17 @@ def cca(stimulus_waves: list, filtered_data: np.ndarray) -> Tuple[list, list]:
 
     Notes
     -----
-    - **Dimensionality Reshaping**: Converts 1-D vectors into 2D column matrices (`(-1, 1)`)
-      required by scikit-learn estimator interfaces.
+    - **Dimensionality Reshaping**: Converts the 1-D `filtered_data` vector into a 2-D
+      column matrix (`(-1, 1)`) required by scikit-learn estimator interfaces, while keeping
+      2-D reference wave arrays as-is.
     - **Independent Projections**: Iterates through each stimulus reference independently,
       fitting a 1-component CCA model to maximize linear correlation between the reference
-      template and the multichannel/single-channel EEG data structure.
+      template and the EEG signal.
     """
-    reshaped_stimulus_waves = []
-    for stimulus_wave in stimulus_waves:
-        reshaped_stimulus_wave = np.reshape(stimulus_wave, (-1, 1))
-        reshaped_stimulus_waves.append(reshaped_stimulus_wave)
     reshaped_filtered_data = np.reshape(filtered_data, (-1, 1))
     
     Xs_C, Ys_C = [], []
-    for wave in reshaped_stimulus_waves:
+    for wave in stimulus_waves:
         cca_model = CCA(n_components=1)
         cca_model.fit(wave, reshaped_filtered_data)
         X_c, Y_c = cca_model.transform(wave, reshaped_filtered_data)
@@ -268,7 +271,7 @@ def detect_frequency(X_c: list, Y_c: list) -> float:
     correlation_coefficients = []
     for x, y in zip(X_c, Y_c):
         correlation = np.corrcoef(x.ravel(), y.ravel())[0, 1]
-        correlation_coefficients.append(correlation)
+        correlation_coefficients.append(np.abs(correlation))  # Use absolute value to account for phase inversion
         
     index_of_max_correlation = np.argmax(correlation_coefficients, axis=None, out=None, keepdims=False)
     detected_frequency = STIMULUS_FREQUENCIES[index_of_max_correlation]
