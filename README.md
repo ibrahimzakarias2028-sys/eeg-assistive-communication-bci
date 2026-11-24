@@ -91,7 +91,7 @@ During development, several technical alternatives were debated to ensure reliab
 
 This project was born from a deep belief that engineering should serve humanity. I am grateful to the open-source scientific Python community for providing the tools that make neurotechnology accessible.[cite: 1]
 
-> *"The best way to predict the future is to code it."*[cite: 1]
+> *"The best way to predict the future is to code it."*
 
 <p align="center">
   <em>Built with 💻, 🧠, and curiosity.</em><br>
